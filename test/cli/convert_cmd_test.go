@@ -64,6 +64,71 @@ func TestConvertCmd(t *testing.T) {
 	}
 }
 
+func TestConvertCmd_PassthroughIfSameFormat(t *testing.T) {
+	sbomArgs := []string{"dir:./testdata/image-pkg-coverage", "-o", "cyclonedx-json"}
+	cmd, input, stderr := runSyft(t, nil, sbomArgs...)
+	if cmd.ProcessState.ExitCode() != 0 {
+		t.Log("STDOUT:\n", input)
+		t.Log("STDERR:\n", stderr)
+		t.Log("COMMAND:", strings.Join(cmd.Args, " "))
+		t.Fatalf("failure executing syft creating an sbom")
+		return
+	}
+
+	inputID, inputVersion := format.Identify(strings.NewReader(input))
+	require.Equal(t, cyclonedxjson.ID, inputID)
+	require.NotEmpty(t, inputVersion)
+
+	tests := []struct {
+		name          string
+		to            string
+		wantUnchanged bool
+		wantID        sbom.FormatID
+		wantVersion   string
+	}{
+		{
+			name:          "same format and version is passed through unchanged",
+			to:            "cyclonedx-json@" + inputVersion,
+			wantUnchanged: true,
+			wantID:        cyclonedxjson.ID,
+			wantVersion:   inputVersion,
+		},
+		{
+			name:        "different version is converted",
+			to:          "cyclonedx-json@1.4",
+			wantID:      cyclonedxjson.ID,
+			wantVersion: "1.4",
+		},
+		{
+			name:        "different format is converted",
+			to:          "spdx-json",
+			wantID:      spdxjson.ID,
+			wantVersion: mustEncoder(spdxjson.NewFormatEncoderWithConfig(spdxjson.DefaultEncoderConfig())).Version(),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cmd := getSyftCommand(t, "convert", "-", "-o", test.to, "--passthrough-if-same-format")
+			cmd.Stdin = strings.NewReader(input)
+			stdout, stderr := runCommandObj(t, cmd, nil, false)
+
+			assertSuccessfulReturnCode(t, stdout, stderr, cmd.ProcessState.ExitCode())
+			logOutputOnFailure(t, cmd, stdout, stderr)
+
+			foundID, foundVersion := format.Identify(strings.NewReader(stdout))
+			require.Equal(t, test.wantID, foundID)
+			require.Equal(t, test.wantVersion, foundVersion)
+
+			if test.wantUnchanged {
+				require.Equal(t, strings.TrimSpace(input), strings.TrimSpace(stdout))
+			} else {
+				require.NotEqual(t, strings.TrimSpace(input), strings.TrimSpace(stdout))
+			}
+		})
+	}
+}
+
 func mustEncoder(enc sbom.FormatEncoder, err error) sbom.FormatEncoder {
 	if err != nil {
 		panic(err)
