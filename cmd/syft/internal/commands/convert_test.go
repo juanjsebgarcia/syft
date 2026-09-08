@@ -135,7 +135,7 @@ func Test_partitionOutputsBySourceFormat(t *testing.T) {
 			output := options.DefaultOutput()
 			output.Outputs = tt.outputs
 
-			unchanged, toConvert, err := partitionOutputsBySourceFormat(output, tt.content)
+			unchanged, toConvert, err := partitionOutputsBySourceFormat(output, bytes.NewReader(tt.content))
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantUnchanged, unchanged)
 			assert.Equal(t, tt.wantToConvert, toConvert)
@@ -170,6 +170,62 @@ func Test_RunConvert_passthroughIfSameFormat(t *testing.T) {
 
 		opts := newOpts(true, "cyclonedx-json="+cdxOut, "spdx-json="+spdxOut)
 		require.NoError(t, RunConvert(opts, writeInput(t)))
+
+		got, err := os.ReadFile(cdxOut)
+		require.NoError(t, err)
+		assert.Equal(t, cdxContent, got)
+
+		spdx, err := os.ReadFile(spdxOut)
+		require.NoError(t, err)
+		id, _ := format.Identify(bytes.NewReader(spdx))
+		assert.Equal(t, spdxjson.ID, id)
+	})
+
+	t.Run("STDIN input is copied unchanged while others are converted", func(t *testing.T) {
+		dir := t.TempDir()
+		cdxOut := filepath.Join(dir, "out.cdx.json")
+		spdxOut := filepath.Join(dir, "out.spdx.json")
+
+		stdin, err := os.Open(writeInput(t))
+		require.NoError(t, err)
+		defer stdin.Close()
+
+		originalStdin := os.Stdin
+		os.Stdin = stdin
+		t.Cleanup(func() { os.Stdin = originalStdin })
+
+		opts := newOpts(true, "cyclonedx-json="+cdxOut, "spdx-json="+spdxOut)
+		require.NoError(t, RunConvert(opts, "-"))
+
+		got, err := os.ReadFile(cdxOut)
+		require.NoError(t, err)
+		assert.Equal(t, cdxContent, got)
+
+		spdx, err := os.ReadFile(spdxOut)
+		require.NoError(t, err)
+		id, _ := format.Identify(bytes.NewReader(spdx))
+		assert.Equal(t, spdxjson.ID, id)
+	})
+
+	t.Run("piped STDIN input is copied unchanged while others are converted", func(t *testing.T) {
+		dir := t.TempDir()
+		cdxOut := filepath.Join(dir, "out.cdx.json")
+		spdxOut := filepath.Join(dir, "out.spdx.json")
+
+		pipeReader, pipeWriter, err := os.Pipe()
+		require.NoError(t, err)
+		defer pipeReader.Close()
+		go func() {
+			defer pipeWriter.Close()
+			_, _ = pipeWriter.Write(cdxContent)
+		}()
+
+		originalStdin := os.Stdin
+		os.Stdin = pipeReader
+		t.Cleanup(func() { os.Stdin = originalStdin })
+
+		opts := newOpts(true, "cyclonedx-json="+cdxOut, "spdx-json="+spdxOut)
+		require.NoError(t, RunConvert(opts, "-"))
 
 		got, err := os.ReadFile(cdxOut)
 		require.NoError(t, err)
@@ -217,6 +273,17 @@ func Test_RunConvert_passthroughIfSameFormat(t *testing.T) {
 		require.NoError(t, RunConvert(opts, writeInput(t)))
 
 		got, err := os.ReadFile(cdxOut)
+		require.NoError(t, err)
+		assert.Equal(t, cdxContent, got)
+	})
+
+	t.Run("writing over the input file leaves it intact", func(t *testing.T) {
+		input := writeInput(t)
+
+		opts := newOpts(true, "cyclonedx-json="+input)
+		require.NoError(t, RunConvert(opts, input))
+
+		got, err := os.ReadFile(input)
 		require.NoError(t, err)
 		assert.Equal(t, cdxContent, got)
 	})
